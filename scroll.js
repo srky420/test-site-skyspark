@@ -1,130 +1,165 @@
-/* ============================================
-   STACKED CARD SCROLL — scroll.js  (v2)
-   3 panels: hero → services → team
-   ============================================ */
-
+/* scroll.js — final clean version
+   Pure CSS class-based transitions.
+   No inline transforms, no rAF loops.
+*/
 (function () {
 
-  const panels     = Array.from(document.querySelectorAll('.stack-panel'));
-  const dots       = Array.from(document.querySelectorAll('.scroll-dot'));
-  const scrollHint = document.getElementById('scroll-hint');
-  const cards      = Array.from(document.querySelectorAll('.svc-card'));
-  const TOTAL      = panels.length;
+  const IDS      = ['hero', 'services', 'team'];
+  const DURATION = 850;
 
-  let current     = 0;
-  let isAnimating = false;
+  let cur         = 0;
+  let busy        = false;
 
-  function easeInOutCubic(t) {
-    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  /* ── Inject transition CSS once ── */
+  var style = document.createElement('style');
+  style.textContent = [
+    '.sp-above  { transform: translateY(-100%) !important; }',
+    '.sp-active { transform: translateY(0%)    !important; }',
+    '.sp-below  { transform: translateY(100%)  !important; }',
+    '.sp-trans  { transition: transform ' + DURATION + 'ms cubic-bezier(0.77,0,0.175,1) !important; }'
+  ].join('\n');
+  document.head.appendChild(style);
+
+  function el(id)  { return document.getElementById(id); }
+  function cls(id) { return el(id).classList; }
+
+  /* Clear position classes */
+  function clearPos(id) {
+    cls(id).remove('sp-above', 'sp-active', 'sp-below', 'sp-trans');
   }
 
-  function animatePanel(panel, fromY, toY, duration, onDone) {
-    const start = performance.now();
-    function step(now) {
-      const elapsed = now - start;
-      const raw   = Math.min(elapsed / duration, 1);
-      const eased = easeInOutCubic(raw);
-      panel.style.transform = `translateY(${fromY + (toY - fromY) * eased}%)`;
-      if (raw < 1) { requestAnimationFrame(step); }
-      else { panel.style.transform = `translateY(${toY}%)`; if (onDone) onDone(); }
-    }
-    requestAnimationFrame(step);
+  /* ── Place all panels without animation ── */
+  function init() {
+    IDS.forEach(function(id, i) {
+      clearPos(id);
+      cls(id).add(i === 0 ? 'sp-active' : 'sp-below');
+    });
+    syncDots();
+    onEnter(0);
   }
 
-  function goTo(index) {
-    if (isAnimating || index === current) return;
-    if (index < 0 || index >= TOTAL)     return;
+  /* ── Navigate to panel index ── */
+  function goTo(next) {
+    if (busy || next === cur)      return;
+    if (next < 0 || next >= IDS.length) return;
 
-    isAnimating = true;
-    const dir  = index > current ? 'down' : 'up';
-    const from = panels[current];
-    const to   = panels[index];
-    const dur  = 900;
+    busy = true;
+    var prev = cur;
+    var down = next > prev;
 
-    onPanelLeave(current);
+    onLeave(prev);
 
-    if (dir === 'down') {
-      animatePanel(from, 0, -100, dur);
-      to.style.transform = 'translateY(100%)';
-      animatePanel(to, 100, 0, dur, () => {
-        current = index; isAnimating = false; updateDots(); onPanelEnter(current);
+    /* 1. Place incoming panel on the off-screen side (no transition) */
+    clearPos(IDS[next]);
+    cls(IDS[next]).add(down ? 'sp-below' : 'sp-above');
+
+    /* 2. Force a reflow so browser registers the starting position */
+    el(IDS[next]).getBoundingClientRect();
+
+    /* 3. Enable transitions on both panels */
+    cls(IDS[prev]).add('sp-trans');
+    cls(IDS[next]).add('sp-trans');
+
+    /* 4. Set target positions — transitions will fire */
+    clearPos(IDS[prev]);  /* removes old position class but keeps sp-trans */
+    cls(IDS[prev]).add('sp-trans', down ? 'sp-above' : 'sp-below');
+    clearPos(IDS[next]);
+    cls(IDS[next]).add('sp-trans', 'sp-active');
+
+    /* 5. After transition ends, clean up */
+    setTimeout(function() {
+      clearPos(IDS[prev]);
+      cls(IDS[prev]).add(down ? 'sp-above' : 'sp-below');  /* keep it hidden, no transition */
+
+      cur  = next;
+      busy = false;
+      syncDots();
+      onEnter(next);
+
+      /* Reset scroll of panel we just left */
+      el(IDS[prev]).scrollTop = 0;
+    }, DURATION + 60);
+  }
+
+  /* ── Lifecycle ── */
+  function onEnter(i) {
+    var hint = el('scroll-hint');
+    if (hint) hint.style.opacity = i === 0 ? '1' : '0';
+
+    if (i === 1) {
+      var cards = document.querySelectorAll('.svc-card');
+      cards.forEach(function(c, idx) {
+        setTimeout(function() { c.classList.add('visible'); }, idx * 90);
       });
-    } else {
-      if (current === 1) { from.scrollTop = 0; }
-      animatePanel(from, 0, 100, dur);
-      to.style.transform = 'translateY(-100%)';
-      animatePanel(to, -100, 0, dur, () => {
-        current = index; isAnimating = false; updateDots(); onPanelEnter(current);
+    }
+    if (i === 2 && window.teamNetwork) window.teamNetwork.activate();
+  }
+
+  function onLeave(i) {
+    if (i === 1) {
+      document.querySelectorAll('.svc-card').forEach(function(c) {
+        c.classList.remove('visible');
       });
     }
-
-    if (scrollHint) scrollHint.classList.toggle('hidden', index !== 0);
+    if (i === 2 && window.teamNetwork) window.teamNetwork.deactivate();
   }
 
-  function onPanelEnter(idx) {
-    if (idx === 1) cards.forEach((c, i) => setTimeout(() => c.classList.add('visible'), i * 80));
-    if (idx === 2 && window.teamNetwork) window.teamNetwork.activate();
+  /* ── Sync nav dots ── */
+  function syncDots() {
+    document.querySelectorAll('.scroll-dot').forEach(function(d, i) {
+      d.classList.toggle('active', i === cur);
+    });
   }
 
-  function onPanelLeave(idx) {
-    if (idx === 1) cards.forEach(c => c.classList.remove('visible'));
-    if (idx === 2 && window.teamNetwork) window.teamNetwork.deactivate();
+  /* ── Can we leave the current panel? ── */
+  function canLeave(goingDown) {
+    var panel = el(IDS[cur]);
+    if (!panel) return true;
+    var overflow = panel.scrollHeight > panel.clientHeight + 4;
+    if (!overflow) return true;
+    if (goingDown) return (panel.scrollTop + panel.clientHeight) >= (panel.scrollHeight - 6);
+    return panel.scrollTop <= 4;
   }
 
-  function updateDots() {
-    dots.forEach((d, i) => d.classList.toggle('active', i === current));
-  }
-
-  /* Wheel */
-  let wheelCooldown = false, wheelAccum = 0;
-  window.addEventListener('wheel', (e) => {
+  /* ── Wheel ── */
+  var wheelLock = false;
+  window.addEventListener('wheel', function(e) {
     e.preventDefault();
-    if (isAnimating || wheelCooldown) return;
-    if (current === 1) {
-      const svc = document.getElementById('services');
-      if (svc) {
-        if (e.deltaY > 0 && svc.scrollTop + svc.clientHeight < svc.scrollHeight - 2) return;
-        if (e.deltaY < 0 && svc.scrollTop > 0) return;
-      }
-    }
-    wheelAccum += Math.abs(e.deltaY);
-    if (wheelAccum < 60) return;
-    wheelAccum = 0;
-    wheelCooldown = true;
-    setTimeout(() => { wheelCooldown = false; }, 500);
-    goTo(e.deltaY > 0 ? current + 1 : current - 1);
+    if (busy || wheelLock)         return;
+    if (!canLeave(e.deltaY > 0))   return;
+    wheelLock = true;
+    setTimeout(function() { wheelLock = false; }, 700);
+    goTo(e.deltaY > 0 ? cur + 1 : cur - 1);
   }, { passive: false });
 
-  /* Keyboard */
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowDown' || e.key === 'PageDown') { e.preventDefault(); goTo(current + 1); }
-    if (e.key === 'ArrowUp'   || e.key === 'PageUp')   { e.preventDefault(); goTo(current - 1); }
+  /* ── Keyboard ── */
+  window.addEventListener('keydown', function(e) {
+    if (e.key === 'ArrowDown' || e.key === 'PageDown') { e.preventDefault(); goTo(cur + 1); }
+    if (e.key === 'ArrowUp'   || e.key === 'PageUp')   { e.preventDefault(); goTo(cur - 1); }
   });
 
-  /* Touch */
-  let touchStartY = null, touchStartX = null;
-  window.addEventListener('touchstart', (e) => { touchStartY = e.touches[0].clientY; touchStartX = e.touches[0].clientX; }, { passive: true });
-  window.addEventListener('touchend', (e) => {
-    if (touchStartY === null) return;
-    const deltaY = touchStartY - e.changedTouches[0].clientY;
-    const deltaX = Math.abs(touchStartX - e.changedTouches[0].clientX);
-    touchStartY = null; touchStartX = null;
-    if (deltaX > Math.abs(deltaY) || Math.abs(deltaY) < 50) return;
-    if (current === 1) {
-      const svc = document.getElementById('services');
-      if (svc) {
-        if (deltaY > 0 && svc.scrollTop + svc.clientHeight < svc.scrollHeight - 2) return;
-        if (deltaY < 0 && svc.scrollTop > 0) return;
-      }
-    }
-    goTo(deltaY > 0 ? current + 1 : current - 1);
+  /* ── Touch ── */
+  var ty0 = null;
+  window.addEventListener('touchstart', function(e) {
+    ty0 = e.touches[0].clientY;
+  }, { passive: true });
+  window.addEventListener('touchend', function(e) {
+    if (ty0 === null) return;
+    var dy = ty0 - e.changedTouches[0].clientY;
+    ty0 = null;
+    if (Math.abs(dy) < 40)       return;
+    if (!canLeave(dy > 0))       return;
+    goTo(dy > 0 ? cur + 1 : cur - 1);
   }, { passive: true });
 
-  /* Dot clicks */
-  dots.forEach(dot => dot.addEventListener('click', () => goTo(parseInt(dot.dataset.target))));
+  /* ── Dot clicks ── */
+  document.querySelectorAll('.scroll-dot').forEach(function(d) {
+    d.addEventListener('click', function() {
+      goTo(parseInt(d.dataset.target, 10));
+    });
+  });
 
-  /* Init */
-  panels.forEach((p, i) => { p.style.transform = i === 0 ? 'translateY(0%)' : 'translateY(100%)'; });
-  onPanelEnter(0);
+  /* ── Boot ── */
+  init();
 
 })();
